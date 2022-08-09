@@ -10,11 +10,9 @@ from transformers import T5Tokenizer, T5ForConditionalGeneration
 from tqdm import tqdm
 import numpy as np
 import pandas as pd
-import time,yaml,wandb
+import yaml
 import random
-import functools
-from sklearn.metrics import f1_score
-import pathlib,os,sys
+import pathlib,os
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -46,39 +44,9 @@ def read_dataset(file_name):
     res = []
     temp = pd.read_csv(file_name)
     for _, row in temp.iterrows():
-        # Converting the labels to the given format to make it easier to train.
         inp, target = row['transcription'], f'action {row["action"]} object {row["object"]} location {row["location"]}'
         res.append((tokenize(inp), tokenize(target)))
     return res
-
-
-def train(model, iterator, optimizer, pad_id):
-    '''
-    function: Training the model
-    Input: model, iterator, optimizer, pad_id
-    Returns: epoch_loss
-    '''
-    epoch_loss = 0
-    epoch_acc = 0
-    
-    model.train()
-    for (inp_ids, inp_mask), (target_ids, target_mask) in tqdm(iterator):
-        model.to(device)
-        optimizer.zero_grad()
-        inp_ids = inp_ids.to(device)
-        inp_mask = inp_mask.to(device)
-        target_ids[target_ids == pad_id] = -100  
-        # needed to ignore padding from loss
-        target_ids = target_ids.to(device)
-        # Obtaining the logits to obtain the loss
-        predictions = model(input_ids=inp_ids, attention_mask=inp_mask, labels=target_ids)
-        # Obtaining the crossEntropyLoss
-        loss = predictions.loss
-        loss.backward()
-        optimizer.step()
-        epoch_loss += loss.item()
-        
-    return epoch_loss / len(iterator)
 
 
 def evaluate(model, iterator, valid_ds_orig, pad_id):
@@ -124,12 +92,9 @@ def evaluate(model, iterator, valid_ds_orig, pad_id):
 
 
 def run(model, tokenizer, root_dir):
-    '''
-    Function: Similar to the main function
-    '''
     torch.cuda.empty_cache()
     seed_everything(SEED)
-
+    
     # Maximum number of characters in a sentence. Set to 512.
     max_input_length = tokenizer.max_model_input_sizes[model_name]
     pad_token = tokenizer.pad_token
@@ -138,17 +103,9 @@ def run(model, tokenizer, root_dir):
     pad_id = tokenizer.convert_tokens_to_ids(pad_token)
     
     # Reading dataset and preprocessing it to get it in the desired format
-    train_ds = read_dataset(f'{root_dir}/train_data.csv')
-    valid_ds = read_dataset(f'{root_dir}/valid_data.csv')
+    valid_ds = read_dataset(f'{root_dir}/test.csv')
     
     # Dataloader
-    train_loader = DataLoader(
-        dataset=train_ds,
-        batch_size=BATCH_SIZE,
-        shuffle=True,
-        drop_last=True,
-        num_workers=num_workers)
-
     valid_loader = DataLoader(
         dataset=valid_ds,
         batch_size=BATCH_SIZE,
@@ -156,32 +113,18 @@ def run(model, tokenizer, root_dir):
         drop_last=False,
         num_workers=num_workers)
     
-    optimizer = optim.Adam(model.parameters(), lr = learning_rate)
-
     model = model.to(device)
 
-    N_EPOCHS = num_epoch
-    best_acc = 0.0
-    for epoch in range(N_EPOCHS):
-        
-        #training part
-        train_loss = train(model, train_loader, optimizer, pad_id)
-        print(f'Epoch: {epoch+1:02} | Train Loss: {train_loss:.3f}')
-        
-        # Validation
-        valid_ds_orig = pd.read_csv(f'{root_dir}/valid_data.csv')
-        valid_loss, valid_acc = evaluate(model, valid_loader, valid_ds_orig, pad_id)
-        print(f'\t Val. Loss: {valid_loss:.3f} |  Val. Acc: {valid_acc:.2f}%')
-        if(valid_acc>best_acc):
-            best_acc = valid_acc
-            torch.save(model.state_dict(), f'{base_path}/weights/best_model.pth')
-            print("Model saved.")
-        wandb.log({"Training loss": train_loss, "Validation loss": valid_loss, "Validation accuracy": valid_acc})
+    # Used to find accuracy
+    valid_ds_orig = pd.read_csv(f'{root_dir}/test.csv')
+    
+    # Validating
+    valid_loss, valid_acc = evaluate(model, valid_loader, valid_ds_orig, pad_id)
+    print(f'\t Val. Loss: {valid_loss:.3f} |  Val. Acc: {valid_acc:.2f}%')
 
 if __name__ == "__main__":
     # Helps make all paths relative
     base_path = pathlib.Path().absolute()
-
     # Path to the config file
     yml_path = f"{base_path}/config/config.yml"
     if not os.path.exists(yml_path):
@@ -190,31 +133,22 @@ if __name__ == "__main__":
     with open(yml_path, "r") as ymlfile:
         cfg = yaml.safe_load(ymlfile)
     
-    # Input of the required hyperparameters
+    # Extracting parameters from the config file.
     BATCH_SIZE = cfg["params"]["BATCH_SIZE"]
-    learning_rate = cfg["params"]["learning_rate"]
     model_name = cfg["params"]["model_name"]
     device = cfg["params"]["device"]
 
     SEED = 1234
-    # Since the dataset is simple, 1 epoch is sufficient to finetune.
-    num_epoch = 1
     num_workers = 2
-    # Path to the dataset
+    # Path to the datset
     root_dir = f"{base_path}/task_data"
     if not os.path.exists(root_dir):
         print("Dataset missing.")
     
-    #Loading the pretrained model and tokenizer
+    # Imports the pretrained model and it's tokenizer
+    print("Loading model and weights...")
     model = T5ForConditionalGeneration.from_pretrained(model_name)
     tokenizer = T5Tokenizer.from_pretrained(model_name)
-    
-    # For logging
-    wandb.login()
-    wandb.init(project="saarthi_nlp_task", entity="gakash2001")
-    wandb.config = {
-        "learning_rate": learning_rate,
-        "epochs": num_epoch,
-        "batch_size": BATCH_SIZE
-    }
+    checkpoint = torch.load(f"{base_path}/weights/best_model.pth")
+    model.load_state_dict(checkpoint)
     run(model, tokenizer, root_dir)
