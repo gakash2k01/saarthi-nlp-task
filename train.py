@@ -14,6 +14,7 @@ import time
 import random
 import functools
 from sklearn.metrics import f1_score
+import pathlib,os,sys
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -163,7 +164,7 @@ if __name__ == "__main__":
     root_dir = f"{base_path}/task_data"
     if not os.path.exists(root_dir):
         print("Dataset missing.")
-    EXPERIMENT_NAME = f"{model_name}_nlp_task}"
+    EXPERIMENT_NAME = f"{model_name}_nlp_task"
     PATH = f"{base_path}/logs/{EXPERIMENT_NAME}"
     LOG_PATH = f'{PATH}/log_file.txt'
 
